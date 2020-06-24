@@ -25,8 +25,7 @@ function partial_scan(op::Function, output::CuDeviceArray{T}, input, aggregates,
     # iterate the other dimensions using the remaining block dimensions
     bid = (blockIdx().z-1) * gridDim().y + blockIdx().y
 
-    lane_id = (threadIdx().x - 1) % 32
-    warp_id = (threadIdx().x - 1) ÷ 32
+    wid, lid = fldmod1(threadIdx().x, warpsize())
 
     if bid > length(Rother)
         return
@@ -50,49 +49,49 @@ function partial_scan(op::Function, output::CuDeviceArray{T}, input, aggregates,
 
     # Compute sums within thread warp
     i = 1
-    while i <= 32
+    while i <= warpsize()
         n = shfl_up_sync(mask, value, i)
-        if lane_id >= i
+        if lid > i
             value = op(value, n)
         end
         i *= 2
     end
 
     # Write warp sum to shared memory
-    if lane_id == 31
-        @inbounds temp[warp_id + 1] = value
+    if lid == warpsize()
+        @inbounds temp[wid] = value
     end
     sync_threads()
 
-    # Warp 0 computes intermediate sums
-    if warp_id == 0
+    # Warp 1 computes intermediate sums
+    if wid == 1
         warp_sum = neutral
-        if lane_id < warps
-            warp_sum = temp[lane_id + 1]
+        if lid <= warps
+            warp_sum = temp[lid]
         end
 
         i = 1
-        while i <= 32
+        while i <= warps
             n = shfl_up_sync(mask, warp_sum, i)
-            if lane_id >= i
+            if lid > i
                 warp_sum = op(warp_sum, n)
             end
             i *= 2
         end
         warp_sum = shfl_up_sync(mask, warp_sum, 1)
-        if lane_id == 0
+        if lid == 1
             warp_sum = neutral
         end
 
-        if lane_id < warps
-            @inbounds temp[lane_id + 1] = warp_sum
+        if lid <= warps
+            @inbounds temp[lid] = warp_sum
         end
 
     end
     sync_threads()
 
     @inbounds begin
-        value = op(temp[warp_id + 1], value)
+        value = op(temp[wid], value)
         output[Ipre, tid, Ipost] = value
         if threadIdx().x == blockDim().x || tid == length(Rdim)
             aggregates[Ipre, blockIdx().x, Ipost] = value
@@ -111,7 +110,7 @@ function aggregate_partial_scan(op::Function, output::CuDeviceArray, aggregates,
     # iterate the other dimensions using the remaining block dimensions
     bid = (blockIdx().z-1) * gridDim().y + blockIdx().y
 
-    block = (tid - 1) ÷ 256
+    block = (tid - 1) ÷ 256 # TODO: make dynamic, use threads_per_block
 
     if tid > length(Rdim)
         return
