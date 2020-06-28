@@ -8,9 +8,10 @@
 # https://developer.nvidia.com/gpugems/gpugems3/part-vi-gpu-computing/chapter-39-parallel-prefix-sum-scan-cuda
 # 
 #
-# performance TODOs:
-# - Multiple elements per thread 
+# TODOs:
+# - Multiple elements per thread
 # - Use warpSize instead of hardcoding and move to GPUArrays
+# - support grid dims where y or z axis > 65536
 function partial_scan(op::Function, output::CuDeviceArray{T}, input, aggregates,
                         Rdim, Rpre, Rpost, Rother, neutral) where {T}
     threads = blockDim().x
@@ -101,7 +102,7 @@ function partial_scan(op::Function, output::CuDeviceArray{T}, input, aggregates,
 end
 
 # aggregate the result of a partial scan by applying preceding block aggregates
-function aggregate_partial_scan(op::Function, output::CuDeviceArray, aggregates,
+function aggregate_partial_scan(op::Function, output::CuDeviceArray, aggregates::CuDeviceArray,
                                 Rdim, Rpre, Rpost, Rother, init, neutral, 
                                 ::Val{inclusive}=Val{true}) where inclusive
 
@@ -110,7 +111,7 @@ function aggregate_partial_scan(op::Function, output::CuDeviceArray, aggregates,
     # iterate the other dimensions using the remaining block dimensions
     bid = (blockIdx().z-1) * gridDim().y + blockIdx().y
 
-    block = (tid - 1) ÷ 256 # TODO: make dynamic, use threads_per_block
+    block = (tid - 1) ÷ blockDim().x;
 
     if tid > length(Rdim)
         return
@@ -160,34 +161,41 @@ function scan!(f::Function, output::CuArray{T}, input::CuArray;
     Rpost = CartesianIndices(size(input)[dims+1:end])
     Rother = CartesianIndices((length(Rpre), length(Rpost)))
 
-    threads_per_block = 256;
-
     # round threads up to the nearest multiple of 32
-    threads = ((length(Rdim)-1)÷32+1)*32
-    blocks_x = (threads - 1) ÷ threads_per_block + 1 
+    threads = nextwarp(device(), length(Rdim))
 
     #Determine Grid Dims
     blocks_others = (length(Rpre), length(Rpost))
+
+    # Compute partial scan
+    args = (f, output, input, output, Rdim, Rpre, Rpost, Rother, neutral)
+
+    kernel_args = cudaconvert.(args)
+    kernel_tt = Tuple{Core.Typeof.(kernel_args)...}
+    kernel = cufunction(partial_scan, kernel_tt)
+    compute_shmem(threads) = threads*sizeof(T)
+    launch_threads = launch_configuration(kernel.fun; shmem=compute_shmem).threads
+    
+    sz = launch_threads*sizeof(T)
+    blocks_x = cld(threads, launch_threads)
+    block_dims = (blocks_x, blocks_others...)
 
     # Declare aggregates for recursively computing large arrays
     aggregates_dims = (size(input)[1:(dims - 1)]...,blocks_x, size(input)[(dims+1):end]...)
     aggregates = CuArray{T}(undef, aggregates_dims)
 
-    # Compute partial scan
     args = (f, output, input, aggregates, Rdim, Rpre, Rpost, Rother, neutral)
-    block_dims = (blocks_x, blocks_others...)
-    sz = sizeof(T)*threads_per_block
 
-    @cuda(threads=threads_per_block,blocks=block_dims, shmem=sz, partial_scan(args...))
+    @cuda(threads=launch_threads,blocks=block_dims, shmem=sz, partial_scan(args...))
 
     # Recusively compute partial sum of partial sums
-    if length(Rdim) > threads_per_block
+    if length(Rdim) > launch_threads
         accumulate!(f, aggregates, aggregates, dims=dims)
     end
 
     # Broadcast partial sums
     args = (f, output, aggregates, Rdim, Rpre, Rpost, Rother, init, neutral, Val(inclusive))
-    @cuda(threads=threads_per_block, blocks=block_dims, aggregate_partial_scan(args...))
+    @cuda(threads=launch_threads, blocks=block_dims, aggregate_partial_scan(args...))
 
     unsafe_free!(aggregates)
     return output
