@@ -10,10 +10,6 @@
 #
 # TODOs:
 # - Multiple elements per thread
-<<<<<<< HEAD
-=======
-# - Use warpSize instead of hardcoding and move to GPUArrays
->>>>>>> d24d0260f4609f9b4e31b00da0495dca34499e9c
 # - support grid dims where y or z axis > 65536
 function partial_scan(op::Function, output::CuDeviceArray{T}, input, aggregates,
                         Rdim, Rpre, Rpost, Rother, neutral) where {T}
@@ -114,11 +110,7 @@ function aggregate_partial_scan(op::Function, output::CuDeviceArray, aggregates:
     # iterate the other dimensions using the remaining block dimensions
     bid = (blockIdx().z-1) * gridDim().y + blockIdx().y
 
-<<<<<<< HEAD
     block = cld(tid, blockDim().x);
-=======
-    block = (tid - 1) ÷ blockDim().x;
->>>>>>> d24d0260f4609f9b4e31b00da0495dca34499e9c
 
     if tid > length(Rdim)
         return
@@ -133,12 +125,8 @@ function aggregate_partial_scan(op::Function, output::CuDeviceArray, aggregates:
         I = Rother[bid]
         Ipre = Rpre[I[1]]
         Ipost = Rpost[I[2]]
-<<<<<<< HEAD
         if block != 1
-=======
-        if block != 0
->>>>>>> d24d0260f4609f9b4e31b00da0495dca34499e9c
-            value = op(value, aggregates[Ipre, block, Ipost])
+            value = op(value, aggregates[Ipre, block - 1, Ipost])
         end
         if inclusive
             output[Ipre, tid, Ipost] = op(value, output[Ipre, tid, Ipost])
