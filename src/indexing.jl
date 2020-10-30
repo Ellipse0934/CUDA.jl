@@ -125,7 +125,7 @@ function Base.findmin(a::AnyCuArray; dims=:)
         # Check for NaN first because NaN == NaN is false
         isnan(x) && return t1
         isnan(y) && return t2
-        Base.min(x, y) == x && return t1
+        min(x, y) == x && return t1
         return t2
     end
 
@@ -160,8 +160,8 @@ function Base.findmax(a::AnyCuArray; dims=:)
         end
 
         # Check for NaN first because NaN == NaN is false
-        Base.isnan(x) && return t1
-        Base.isnan(y) && return t2
+        isnan(x) && return t1
+        isnan(y) && return t2
         max(x, y) == x && return t1
         return t2
     end
@@ -181,8 +181,8 @@ function Base.findmax(a::AnyCuArray; dims=:)
     else
         res = mapreduce(tuple, f, a, indx[1]; 
                         init = (typemin(eltype(a)), indx[2]), dims=dims)
-        #vals = map(x->x[1], res)
-        #inds = map(x->x[2], res)
-        return res
+        vals = map(x->x[1], res)
+        inds = map(x->x[2], res)
+        return (vals, inds)
     end
 end
